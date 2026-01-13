@@ -10,7 +10,7 @@ const CHAINS = {
   bsc: { name: 'BNB Chain', id: '0x38', chainid: '56', rpc: 'https://bsc-dataseed.binance.org', symbol: 'BNB', explorer: 'https://bscscan.com', api: 'https://api.etherscan.io/v2/api', seadrop: null }
 };
 
-const API_KEY = process.env.REACT_APP_ETHERSCAN_API_KEY || '';
+const API_KEY = import.meta.env?.REACT_APP_ETHERSCAN_API_KEY || '';
 
 export default function NFTMintBot() {
   const [connected, setConnected] = useState(false);
@@ -28,7 +28,13 @@ export default function NFTMintBot() {
   const [availableWallets, setAvailableWallets] = useState([]);
   const [manualPrice, setManualPrice] = useState('');
   const [showManual, setShowManual] = useState(false);
+  const [autoMintMode, setAutoMintMode] = useState(false);
+  const [targetTime, setTargetTime] = useState('');
+  const [monitoring, setMonitoring] = useState(false);
+  const [countdown, setCountdown] = useState('');
   const connectedProvider = useRef(null);
+  const monitorInterval = useRef(null);
+  const countdownInterval = useRef(null);
 
   useEffect(() => {
     const detected = [];
@@ -268,6 +274,107 @@ export default function NFTMintBot() {
   const reset = () => {
     setStatus('idle');
     setTx('');
+    setMonitoring(false);
+    setAutoMintMode(false);
+    setTargetTime('');
+    setCountdown('');
+    if (monitorInterval.current) clearInterval(monitorInterval.current);
+    if (countdownInterval.current) clearInterval(countdownInterval.current);
+    log('🔄 Reset complete', 'info');
+  };
+
+  const playAlarm = () => {
+    const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIGGS57OihUBELTKXh8LJnHgU2jdXzzn0vBSl+y/DajDwKFF+16+mjVBILTKXj8bRnHgU2jtXy0n8vBSh+y/DajT0KFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwKFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwKFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwKFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwKFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwKFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwKFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwKFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwKFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwKFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwKFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwKFF6z6+mjVBILTKTk8bRmHgU1jtXyz4AvBSh+yvDbjDwK');
+    audio.play().catch(e => console.log('alarm play failed:', e));
+  };
+
+  const checkMintLive = async () => {
+    try {
+      const Web3 = (await import('web3')).default;
+      const web3 = new Web3(CHAINS[chain].rpc);
+      const price = manualPrice || data.price || '0';
+      const totalPrice = parseFloat(price) * amount;
+      const value = web3.utils.toWei(totalPrice.toString(), 'ether');
+
+      // try to estimate gas - if it works, mint is live
+      if (data.isSeaDrop && data.seaDropAddress) {
+        const mintPublicAbi = [{
+          inputs: [
+            {name: "nftContract", type: "address"},
+            {name: "feeRecipient", type: "address"},
+            {name: "minterIfNotPayer", type: "address"},
+            {name: "quantity", type: "uint256"}
+          ],
+          name: "mintPublic",
+          outputs: [],
+          stateMutability: "payable",
+          type: "function"
+        }];
+        const OPENSEA_FEE_RECIPIENT = '0x0000a26b00c1F0DF003000390027140000fAa719';
+        const seaDropContract = new web3.eth.Contract(mintPublicAbi, data.seaDropAddress);
+        await seaDropContract.methods.mintPublic(contract, OPENSEA_FEE_RECIPIENT, address, String(amount)).estimateGas({ from: address, value: value.toString() });
+        return true;
+      } else if (data.mintFunctions && data.mintFunctions.length > 0) {
+        const func = data.mintFunctions[0];
+        const c = new web3.eth.Contract([func], contract);
+        let method;
+        if (func.inputs.length === 0) {
+          method = c.methods[func.name]();
+        } else if (func.inputs.length === 1 && func.inputs[0].type.includes('uint')) {
+          method = c.methods[func.name](amount);
+        }
+        if (method) {
+          await method.estimateGas({ from: address, value: value.toString() });
+          return true;
+        }
+      }
+    } catch (e) {
+      return false;
+    }
+    return false;
+  };
+
+  const startAutoMint = () => {
+    if (!targetTime) return log('❌ Set target time first', 'error');
+    if (!connected || !data) return log('❌ Connect & analyze first', 'error');
+    
+    setAutoMintMode(true);
+    setMonitoring(true);
+    log('🎯 Auto mint started', 'success');
+    log(`⏰ Target: ${new Date(targetTime).toLocaleString()}`, 'info');
+
+    // countdown timer
+    countdownInterval.current = setInterval(() => {
+      const now = Date.now();
+      const target = new Date(targetTime).getTime();
+      const diff = target - now;
+
+      if (diff <= 0) {
+        setCountdown('TIME!');
+        clearInterval(countdownInterval.current);
+        playAlarm();
+        mint();
+        setMonitoring(false);
+      } else {
+        const hours = Math.floor(diff / (1000 * 60 * 60));
+        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+        setCountdown(`${hours}h ${minutes}m ${seconds}s`);
+      }
+    }, 1000);
+
+    // monitor for live mint
+    monitorInterval.current = setInterval(async () => {
+      const isLive = await checkMintLive();
+      if (isLive) {
+        log('🔥 Mint is LIVE!', 'success');
+        clearInterval(monitorInterval.current);
+        clearInterval(countdownInterval.current);
+        playAlarm();
+        mint();
+        setMonitoring(false);
+      }
+    }, 5000); // check every 5 seconds
   };
 
   return (
@@ -312,7 +419,37 @@ export default function NFTMintBot() {
                 <div><label className="block text-sm text-gray-400 mb-2">Amount</label><input type="number" value={amount} onChange={(e) => setAmount(Math.max(1, parseInt(e.target.value) || 1))} min="1" className="w-full glass rounded-xl px-4 py-2 focus:outline-none"/></div>
                 <div><label className="block text-sm text-gray-400 mb-2">Total</label><div className="h-10 flex items-center px-4 glass rounded-xl font-semibold">{data ? (parseFloat(data.price) * amount).toFixed(4) : '0.00'} ETH</div></div>
               </div>
-              {status === 'idle' && <button onClick={mint} disabled={!data || !connected} className="w-full btn-primary rounded-xl py-3 font-medium disabled:opacity-30">Mint Now</button>}
+              
+              {!autoMintMode && !monitoring && status === 'idle' && (
+                <div className="space-y-3">
+                  <button onClick={mint} disabled={!data || !connected} className="w-full btn-primary rounded-xl py-3 font-medium disabled:opacity-30">Mint Now</button>
+                  <div className="relative">
+                    <input 
+                      type="datetime-local" 
+                      value={targetTime} 
+                      onChange={(e) => setTargetTime(e.target.value)}
+                      className="w-full glass rounded-xl px-4 py-2 text-sm focus:outline-none"
+                      placeholder="Set target time"
+                    />
+                  </div>
+                  <button onClick={startAutoMint} disabled={!data || !connected || !targetTime} className="w-full btn-glass rounded-xl py-3 font-medium disabled:opacity-30">
+                    🎯 Start Auto Mint
+                  </button>
+                </div>
+              )}
+              
+              {monitoring && (
+                <div className="space-y-3">
+                  <div className="p-4 glass rounded-xl text-center">
+                    <div className="text-2xl font-bold text-yellow-400 mb-2">{countdown}</div>
+                    <div className="text-sm text-gray-400 animate-pulse">Monitoring & counting down...</div>
+                  </div>
+                  <button onClick={reset} className="w-full bg-red-500/20 hover:bg-red-500/30 border border-red-500/50 rounded-xl py-3 font-medium">
+                    Stop Monitoring
+                  </button>
+                </div>
+              )}
+              
               {(status === 'success' || status === 'error') && <button onClick={reset} className="w-full btn-glass rounded-xl py-3 font-medium">Reset</button>}
             </div>
           </div>
@@ -336,6 +473,13 @@ export default function NFTMintBot() {
             </div>
           </div>
         </div>
+        {(monitoring || status !== 'idle' || data) && (
+          <div className="mt-8 flex justify-center">
+            <button onClick={reset} className="bg-red-500/20 hover:bg-red-500/30 border-2 border-red-500 rounded-xl px-8 py-3 font-bold text-red-500 hover:text-red-400 transition-all">
+              🔄 RESET
+            </button>
+          </div>
+        )}
       </div>
       {showWalletModal && <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={() => setShowWalletModal(false)}><div className="glass rounded-2xl p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}><h2 className="text-xl font-bold mb-6">Connect Wallet</h2><div className="space-y-3">{availableWallets.length > 0 ? availableWallets.map(w => <button key={w.uuid} onClick={() => connectWallet(w)} className="w-full btn-glass rounded-xl p-4 flex items-center gap-3 text-left">{w.icon.startsWith('data:') || w.icon.startsWith('http') ? <img src={w.icon} alt={w.name} className="w-8 h-8 rounded-lg"/> : <span className="text-2xl">{w.icon}</span>}<div><div className="font-semibold">{w.name}</div><div className="text-xs text-gray-400">Installed</div></div></button>) : <button onClick={() => connectWallet({name: 'MetaMask', icon: '🦊'})} className="w-full btn-glass rounded-xl p-4 flex items-center gap-3 text-left"><span className="text-2xl">🦊</span><div><div className="font-semibold">MetaMask</div></div></button>}</div></div></div>}
     </div>
