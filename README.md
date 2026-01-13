@@ -23,8 +23,8 @@ A universal NFT minting bot that automatically detects contract types and execut
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/nft-mint-bot.git
-cd nft-mint-bot
+git clone https://github.com/goldcode001/nftmintbot.git
+cd nftmintbot
 ```
 
 2. Install dependencies:
