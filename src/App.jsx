@@ -10,7 +10,7 @@ const CHAINS = {
   bsc: { name: 'BNB Chain', id: '0x38', chainid: '56', rpc: 'https://bsc-dataseed.binance.org', symbol: 'BNB', explorer: 'https://bscscan.com', api: 'https://api.etherscan.io/v2/api', seadrop: null }
 };
 
-const API_KEY = import.meta.env?.REACT_APP_ETHERSCAN_API_KEY || '';
+const API_KEY = 'CT78XCNFRHJQTT6M7DCIXXDN3B8PKPNN2T';
 
 export default function NFTMintBot() {
   const [connected, setConnected] = useState(false);
